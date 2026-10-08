@@ -187,7 +187,7 @@ class _AuthScreenState extends State<AuthScreen> {
                     ),
                     const SizedBox(height: 24),
                     Text(
-                      'Your health information is protected by Firebase Authentication.',
+                      'Your health information is protected by Supabase Authentication.',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),

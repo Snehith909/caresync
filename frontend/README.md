@@ -1,9 +1,9 @@
 # CareSync Patient App
 
 Flutter patient application for the CareSync post-discharge care
-platform. The app uses Flutter and Dart with Material 3 UI. Its REST
-connection belongs in this project and targets the FastAPI service in
-`../backend`.
+platform. The app uses Flutter and Dart with Material 3 UI. Patient
+authentication and clinical data use the shared Supabase project that also
+powers the doctor portal.
 
 Run from this directory:
 
@@ -35,50 +35,32 @@ Firebase Storage, FCM, speech-to-text, and text-to-speech should be wired
 through their platform configuration and service adapters before production
 use; they should not be simulated as clinical decisions in the UI.
 
-## Cloudinary image storage
+## Supabase configuration
 
-Patient prescription and condition images are uploaded by the backend to
-Cloudinary. Keep the Cloudinary API secret on the backend only; never add it
-to Flutter code or commit it to Git. Copy `.env.example` to `.env` in the
-`backend` directory and set:
+The app reads the public Supabase key through Dart defines. Never put a
+service-role/secret key in the app:
 
-```text
-CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>
+```bash
+flutter run \
+  --dart-define=SUPABASE_URL=https://your-project.supabase.co \
+  --dart-define=SUPABASE_ANON_KEY=your-publishable-key
 ```
 
-The backend exposes `POST /patients/{patient_id}/condition-image` for JPG and
-PNG condition images and returns the Cloudinary secure URL. The Flutter API
-client method is `uploadConditionImage`.
+See [`.env.example`](./.env.example) for the variable names. Apply the
+doctor repository migrations in order, including
+`20261008010000_patient_app_integration.sql`, before signing in. A patient
+account receives a patient profile automatically; a doctor must assign that
+account to a patient row by setting `patients.patient_user_id`.
 
-## Firebase Authentication setup
+## Private Supabase Storage
 
-The Android Firebase configuration is supplied locally as
-`android/app/google-services.json` and is intentionally ignored by Git.
-The configured Firebase Android package is `caresync.com`.
+Patient documents are uploaded to the existing private
+`care-plan-documents` bucket under `patients/{patient_id}/...`. The database
+registers the path only after RLS verifies that the authenticated patient owns
+the assigned record. Doctors can read assigned patient documents; patients
+cannot read another patient's files.
 
-In the Firebase Console:
-
-1. Open the `caresync-5134b` project.
-2. Go to **Project settings > Your apps > Android app (`caresync.com`)**.
-3. Add these fingerprints for local debug builds:
-
-   ```text
-   SHA-1:   B9:82:15:82:95:34:CE:D5:37:9C:3A:74:B1:27:CC:F3:1B:19:A9:D3
-   SHA-256: 61:AC:DC:A9:3C:C1:8F:37:84:DB:31:44:FB:69:68:5F:E7:DD:B7:3E:5C:7A:DD:57:7F:A4:19:AA:8E:BC:2A:39
-   ```
-
-4. Download the updated `google-services.json` and replace
-   `android/app/google-services.json`.
-5. Go to **Authentication > Sign-in method** and enable **Email/Password**.
-6. Uninstall the old app and run:
-
-   ```bash
-   flutter clean
-   flutter pub get
-   flutter run
-   ```
-
-The app starts on the authentication screen. After successful
-authentication, it shows the patient dashboard. The authentication
-implementation is in `lib/auth/`; `AuthGateway` keeps the UI testable and
-separates authentication from patient-care state.
+The app starts on the Supabase authentication screen. After authentication,
+the patient record, active care plan, adherence, condition updates, and
+document upload are loaded through `lib/services/` and protected by database
+RLS.

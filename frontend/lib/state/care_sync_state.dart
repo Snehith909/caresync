@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/care_models.dart';
 import '../services/api_client.dart';
+import '../services/supabase_patient_service.dart';
 
 class CareSyncState extends ChangeNotifier {
   CareSyncState() : medications = [], followUps = [];
@@ -39,6 +40,21 @@ class CareSyncState extends ChangeNotifier {
     final medication = medications.firstWhere((item) => item.id == id);
     medication.status = status;
     notifyListeners();
+  }
+
+  Future<void> recordMedication({
+    required MedicationItem medication,
+    required MedicationStatus status,
+    required String patientId,
+    required SupabasePatientService service,
+  }) async {
+    await service.recordAdherence(
+      patientId: patientId,
+      medicineKey: medication.id.isEmpty ? medication.name : medication.id,
+      scheduledFor: DateTime.now(),
+      status: status == MedicationStatus.missed ? 'missed' : 'taken',
+    );
+    markMedication(medication.id, status);
   }
 
   void addMedication({
@@ -104,25 +120,76 @@ class CareSyncState extends ChangeNotifier {
     }
   }
 
+  Future<bool> submitPatientUpdate({
+    required String patientId,
+    required SupabasePatientService service,
+  }) async {
+    if (currentCondition.trim().isEmpty || conditionImageBytes == null) {
+      submissionMessage = 'Add your condition and prescription image first.';
+      notifyListeners();
+      return false;
+    }
+    isProcessing = true;
+    submissionMessage = null;
+    notifyListeners();
+    try {
+      await service.updateCondition(
+        patientId: patientId,
+        condition: currentCondition.trim(),
+      );
+      await service.uploadDocument(
+        patientId: patientId,
+        bytes: conditionImageBytes!,
+        filename: conditionImageName ?? 'prescription.jpg',
+        contentType: _contentTypeFor(conditionImageName),
+      );
+      submissionMessage = 'Condition and prescription sent to your doctor.';
+      return true;
+    } catch (error) {
+      submissionMessage = 'Could not send your update: $error';
+      return false;
+    } finally {
+      isProcessing = false;
+      notifyListeners();
+    }
+  }
+
   void applyApprovedCarePlan(List<dynamic> plans) {
     final active = plans.whereType<Map<String, dynamic>>().firstWhere(
-      (plan) => plan['status'] == 'ACTIVE',
+      (plan) => plan['status'] == 'active',
       orElse: () => <String, dynamic>{},
     );
     if (active.isEmpty) return;
-    final generated = active['medicines'] as List<dynamic>? ?? const [];
+    final generated = active['medications'] as List<dynamic>? ?? const [];
     medications
       ..clear()
       ..addAll(
         generated.whereType<Map<String, dynamic>>().map(
           (medicine) => MedicationItem(
-            id: medicine['id'] as String? ?? '',
+            id:
+                medicine['id'] as String? ??
+                medicine['name'] as String? ??
+                'medication',
             name: medicine['name'] as String? ?? 'Medication',
-            dose: medicine['dose'] as String? ?? '',
-            time: ((medicine['scheduled_times'] as List<dynamic>?) ?? const [])
-                .map((value) => value.toString())
-                .join(', '),
-            instruction: medicine['food_instruction'] as String? ?? '',
+            dose:
+                medicine['dose'] as String? ??
+                medicine['strength'] as String? ??
+                medicine['dosage'] as String? ??
+                '',
+            time:
+                ((medicine['scheduled_times'] as List<dynamic>?) ?? const [])
+                    .map((value) => value.toString())
+                    .join(', ')
+                    .isEmpty
+                ? medicine['frequency'] as String? ?? ''
+                : ((medicine['scheduled_times'] as List<dynamic>?) ?? const [])
+                      .map((value) => value.toString())
+                      .join(', '),
+            instruction:
+                medicine['food_instruction'] as String? ??
+                medicine['directions'] as String? ??
+                medicine['instructions'] as String? ??
+                '',
             period: 'Today',
           ),
         ),
@@ -130,6 +197,14 @@ class CareSyncState extends ChangeNotifier {
     hasCarePlan = true;
     isPlanApproved = true;
     notifyListeners();
+  }
+
+  String _contentTypeFor(String? filename) {
+    final lower = (filename ?? '').toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.pdf')) return 'application/pdf';
+    return 'image/jpeg';
   }
 
   void updateCondition(String value) {

@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -11,6 +10,9 @@ import 'auth/auth_gate.dart';
 import 'auth/auth_gateway.dart';
 import 'models/care_models.dart';
 import 'services/api_client.dart';
+import 'core/supabase/supabase_client.dart';
+import 'core/supabase/supabase_config.dart';
+import 'services/supabase_patient_service.dart';
 import 'state/care_sync_state.dart';
 
 String userInitial(CareUser? user) {
@@ -20,7 +22,7 @@ String userInitial(CareUser? user) {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+  await CareSyncSupabase.initialize();
   runApp(
     ChangeNotifierProvider(
       create: (_) => CareSyncState(),
@@ -37,7 +39,23 @@ class CareSyncApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const primaryColor = Color(0xFF167D8D);
-    final gateway = authGateway ?? FirebaseAuthGateway();
+    if (authGateway == null && !SupabaseConfig.isConfigured) {
+      return const MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                'Supabase is not configured. Run with SUPABASE_URL and '
+                'SUPABASE_ANON_KEY dart defines.',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    final gateway = authGateway ?? SupabaseAuthGateway();
     return MaterialApp(
       title: 'CareSync',
       debugShowCheckedModeBanner: false,
@@ -179,10 +197,9 @@ class _HomeTabState extends State<HomeTab> {
     final userId = widget.gateway.currentUser?.id;
     if (userId == null || !mounted) return;
     try {
-      final plans = await CareSyncApiClient(
-        baseUrl: 'http://10.0.2.2:8000',
-        userId: userId,
-      ).getPatientCarePlans(userId);
+      final patientService = const SupabasePatientService();
+      final patient = await patientService.getPatient();
+      final plans = await patientService.getCarePlans(patient['id'] as String);
       if (mounted) context.read<CareSyncState>().applyApprovedCarePlan(plans);
     } catch (_) {
       // The local dashboard remains usable while the backend is unavailable.
@@ -508,12 +525,11 @@ class _ConditionUpdateCardState extends State<ConditionUpdateCard> {
                         if (userId == null) return;
                         final careState = context.read<CareSyncState>();
                         final messenger = ScaffoldMessenger.of(context);
-                        final submitted = await careState.submitCarePlan(
-                          patientId: userId,
-                          api: CareSyncApiClient(
-                            baseUrl: 'http://10.0.2.2:8000',
-                            userId: userId,
-                          ),
+                        final patientService = const SupabasePatientService();
+                        final patient = await patientService.getPatient();
+                        final submitted = await careState.submitPatientUpdate(
+                          patientId: patient['id'] as String,
+                          service: patientService,
                         );
                         if (!mounted) return;
                         final message = careState.submissionMessage;
@@ -679,10 +695,26 @@ class MedicationCard extends StatelessWidget {
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
-                  onPressed: () => context.read<CareSyncState>().markMedication(
-                    medication.id,
-                    MedicationStatus.taken,
-                  ),
+                  onPressed: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    final careState = context.read<CareSyncState>();
+                    try {
+                      final service = const SupabasePatientService();
+                      final patient = await service.getPatient();
+                      await careState.recordMedication(
+                        medication: medication,
+                        status: MedicationStatus.taken,
+                        patientId: patient['id'] as String,
+                        service: service,
+                      );
+                    } catch (error) {
+                      messenger.showSnackBar(
+                        SnackBar(
+                          content: Text('Could not record dose: $error'),
+                        ),
+                      );
+                    }
+                  },
                   icon: const Icon(Icons.check),
                   label: Text(isMissed ? 'Mark as taken now' : 'Mark as taken'),
                 ),
@@ -1340,12 +1372,9 @@ class _CarePlanSheetState extends State<CarePlanSheet> {
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
-                  onPressed: () async {
-                    await context.read<CareSyncState>().generateCarePlan();
-                    if (context.mounted) Navigator.pop(context);
-                  },
+                  onPressed: null,
                   icon: const Icon(Icons.auto_awesome),
-                  label: const Text('Generate care plan'),
+                  label: const Text('Doctor approval required'),
                 ),
               ),
             if (state.hasCarePlan && !state.isPlanApproved) ...[
@@ -1362,7 +1391,7 @@ class _CarePlanSheetState extends State<CarePlanSheet> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text(
-          'Document picker is ready for Firebase Storage integration.',
+          'Use the Home tab to attach a prescription and send it for doctor review.',
         ),
       ),
     );

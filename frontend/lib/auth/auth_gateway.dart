@@ -1,4 +1,4 @@
-import 'package:firebase_auth/firebase_auth.dart' as firebase;
+import 'package:supabase_flutter/supabase_flutter.dart' as supabase;
 
 class CareUser {
   const CareUser({required this.id, required this.email, this.displayName});
@@ -23,29 +23,30 @@ abstract class AuthGateway {
   Future<void> signOut();
 }
 
-class FirebaseAuthGateway implements AuthGateway {
-  FirebaseAuthGateway({firebase.FirebaseAuth? auth})
-    : _auth = auth ?? firebase.FirebaseAuth.instance;
+class SupabaseAuthGateway implements AuthGateway {
+  SupabaseAuthGateway({supabase.SupabaseClient? client})
+    : _client = client ?? supabase.Supabase.instance.client;
 
-  final firebase.FirebaseAuth _auth;
-
-  @override
-  Stream<CareUser?> get authStateChanges =>
-      _auth.authStateChanges().map(_mapUser);
+  final supabase.SupabaseClient _client;
 
   @override
-  CareUser? get currentUser => _mapUser(_auth.currentUser);
+  Stream<CareUser?> get authStateChanges => _client.auth.onAuthStateChange.map(
+    (event) => _mapUser(event.session?.user),
+  );
+
+  @override
+  CareUser? get currentUser => _mapUser(_client.auth.currentUser);
 
   @override
   Future<CareUser> signIn({
     required String email,
     required String password,
   }) async {
-    final credential = await _auth.signInWithEmailAndPassword(
+    final response = await _client.auth.signInWithPassword(
       email: email,
       password: password,
     );
-    return _requireUser(credential.user);
+    return _requireUser(response.user);
   }
 
   @override
@@ -54,30 +55,30 @@ class FirebaseAuthGateway implements AuthGateway {
     required String password,
     required String displayName,
   }) async {
-    final credential = await _auth.createUserWithEmailAndPassword(
+    final response = await _client.auth.signUp(
       email: email,
       password: password,
+      data: {'display_name': displayName},
     );
-    await credential.user?.updateDisplayName(displayName);
-    return _requireUser(credential.user);
+    return _requireUser(response.user);
   }
 
   @override
-  Future<void> signOut() => _auth.signOut();
+  Future<void> signOut() => _client.auth.signOut();
 
-  CareUser? _mapUser(firebase.User? user) {
+  CareUser? _mapUser(supabase.User? user) {
     if (user == null) return null;
     return CareUser(
-      id: user.uid,
+      id: user.id,
       email: user.email ?? '',
-      displayName: user.displayName,
+      displayName: user.userMetadata?['display_name'] as String?,
     );
   }
 
-  CareUser _requireUser(firebase.User? user) {
+  CareUser _requireUser(supabase.User? user) {
     final mapped = _mapUser(user);
     if (mapped == null) {
-      throw StateError('Firebase did not return an authenticated user.');
+      throw StateError('Supabase did not return an authenticated user.');
     }
     return mapped;
   }
@@ -122,24 +123,15 @@ class FakeAuthGateway implements AuthGateway {
 }
 
 String authErrorMessage(Object error) {
-  if (error is firebase.FirebaseAuthException) {
+  if (error is supabase.AuthException) {
     switch (error.code) {
-      case 'invalid-credential':
-      case 'wrong-password':
-      case 'user-not-found':
+      case 'invalid_credentials':
+      case 'invalid_grant':
         return 'The email or password is incorrect.';
-      case 'email-already-in-use':
+      case 'user_already_exists':
         return 'An account already exists for this email.';
-      case 'weak-password':
-        return 'Choose a stronger password with at least 6 characters.';
-      case 'invalid-email':
-        return 'Enter a valid email address.';
-      case 'network-request-failed':
-        return 'Firebase could not verify this Android app. Add the debug SHA-1 and SHA-256 fingerprints in Firebase Console, then reinstall the app.';
-      case 'operation-not-allowed':
-        return 'Email/password sign-in is disabled. Enable it in the Firebase Console.';
       default:
-        return error.message ?? 'Authentication failed. Please try again.';
+        return error.message;
     }
   }
   return 'Authentication failed. Please try again.';
