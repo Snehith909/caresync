@@ -31,12 +31,12 @@ export type Database = {
       };
       patients: {
         Row: {
-          id: string; doctor_id: string; name: string; age: number; gender: string; condition: string;
+          id: string; doctor_id: string; patient_user_id: string | null; name: string; age: number; gender: string; condition: string;
           phone: string; nominee: string; nominee_relation: string; follow_up: string | null;
           adherence_percent: number | null; created_at: string; updated_at: string;
         };
         Insert: {
-          doctor_id: string; name: string; age: number; gender: string; condition: string;
+          doctor_id: string; patient_user_id?: string | null; name: string; age: number; gender: string; condition: string;
           phone: string; nominee: string; nominee_relation: string; follow_up?: string | null;
           adherence_percent?: number | null;
         };
@@ -76,6 +76,16 @@ export type Database = {
         Update: never;
         Relationships: [];
       };
+      medication_adherence: Table<{
+        patient_id: string; doctor_id: string; care_plan_id: string | null;
+        medicine_key: string; scheduled_for: string; status: "taken" | "missed";
+        recorded_by: string; recorded_at: string;
+      }, never>;
+      patient_documents: Table<{
+        id: string;
+        patient_id: string; doctor_id: string; storage_path: string;
+        document_type: string; created_by: string; created_at: string;
+      }, never>;
       appointments: Table<TimestampedRow & {
         patient_id: string; starts_at: string; ends_at: string;
         status: "scheduled" | "checked_in" | "in_consultation" | "completed" | "cancelled" | "no_show";

@@ -41,7 +41,10 @@ The sign-in screen includes password recovery. Reset links are sent only for exi
 
 The initial workspace has no patient, alert, or care-plan records. **Add patient** stores a record in Supabase. Reassessment stores clinician-entered notes, medication details, and an uploaded source document as a versioned draft. The doctor must verify the information against the document before approval; the portal does not infer medication details or make clinical decisions. Approval preserves previous versions and marks the prior active version as superseded.
 
-The Flutter patient app is separate. Its API/authentication and any synchronization with this portal must be configured independently; this frontend does not assume that the patient app shares its authorization boundary.
+The Flutter patient app uses the same Supabase project. Patient access is
+scoped by `patients.patient_user_id` and database RLS; doctor access remains
+scoped by the assigned `doctor_id`. Apply the patient integration migration
+before enabling the mobile app.
 
 ## Technology
 

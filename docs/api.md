@@ -4,6 +4,23 @@
 
 The current backend is Supabase. It exposes authenticated REST endpoints under `/rest/v1`, Auth endpoints under `/auth/v1`, Storage endpoints under `/storage/v1`, and the existing workflow functions under `/rest/v1/rpc`. Requests use the Supabase URL and public anon/publishable key; authenticated operations also carry the user's access token. Row-level security and database constraints enforce access and validation. The browser must never use a service-role key.
 
+## Patient mobile integration
+
+The additive patient integration migration exposes the following
+RLS-protected operations to an authenticated patient:
+
+| Operation | Supabase resource |
+| --- | --- |
+| Load assigned patient record | `GET /rest/v1/patients?patient_user_id=eq.{auth.uid()}` |
+| Update current condition | `POST /rest/v1/rpc/update_patient_condition` |
+| Upload a prescription/report | Private Storage bucket `care-plan-documents`, then `POST /rest/v1/rpc/register_patient_document` |
+| Record taken/missed medicine | `POST /rest/v1/rpc/record_medication_adherence` |
+| Read active/history care plans | `GET /rest/v1/care_plans?patient_id=eq.{assignedPatientId}` |
+
+The patient ID is resolved from the authenticated user and every RPC
+re-checks that relationship. Clients must not supply a doctor ID or
+impersonate another patient.
+
 The paths below describe the current Supabase resources and their purpose; they are not a claim that a separate `/api` Express server exists.
 
 ## Existing doctor portal workflows

@@ -60,6 +60,7 @@ function App() {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [plans, setPlans] = useState<CarePlan[]>([]);
+  const [patientDocuments, setPatientDocuments] = useState<{ id: string; patient_id: string; storage_path: string; document_type: string; created_at: string }[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
   const [dataError, setDataError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -114,6 +115,13 @@ function App() {
         throw new Error("This account is not authorized for the CareSync doctor workspace. Ask your administrator to provision doctor access.");
       }
       const workspace = await loadWorkspace();
+      const adherenceByPatient = new Map<string, { taken: number; total: number }>();
+      for (const event of workspace.adherence) {
+        const current = adherenceByPatient.get(event.patient_id) ?? { taken: 0, total: 0 };
+        current.total += 1;
+        if (event.status === "taken") current.taken += 1;
+        adherenceByPatient.set(event.patient_id, current);
+      }
       const names = new Map(workspace.patients.map((patient) => [patient.id, patient.name]));
       const mappedPlans: CarePlan[] = workspace.plans.map((plan) => ({
         ...plan,
@@ -133,6 +141,9 @@ function App() {
           : patientPlans.some((plan) => plan.status === "active") ? "Active plan" : "No plan recorded";
         return {
           ...patient,
+          adherence_percent: adherenceByPatient.has(patient.id)
+            ? Math.round((adherenceByPatient.get(patient.id)!.taken / adherenceByPatient.get(patient.id)!.total) * 100)
+            : patient.adherence_percent,
           initials: initials(patient.name),
           color: patientColors[index % patientColors.length],
           plan: currentPlan ? `Version ${currentPlan.version} · ${statusLabel(currentPlan.status)}` : "No plan recorded",
@@ -143,11 +154,13 @@ function App() {
       setPatients(mappedPatients);
       setPlans(mappedPlans);
       setAlerts(mappedAlerts);
+      setPatientDocuments(workspace.documents);
     } catch (error) {
       setDataError(errorMessage(error));
       setPatients([]);
       setPlans([]);
       setAlerts([]);
+      setPatientDocuments([]);
     } finally {
       setDataLoading(false);
     }
@@ -369,7 +382,7 @@ function App() {
           />}
           {page === "patients" && <PatientsPage patients={filteredPatients} allCount={patients.length} filter={filter} setFilter={setFilter} openPatient={openPatient} search={search} onAdd={() => setShowAddPatient(true)} />}
           {page === "patient" && (selectedPatient
-            ? <PatientPage patient={selectedPatient} plans={plans.filter((plan) => plan.patient_id === selectedPatient.id)} alerts={alerts.filter((alert) => alert.patient_id === selectedPatient.id)} back={() => openPage("patients")} openReassessment={() => { setNote(""); setDocument(null); setMedications([{ name: "", strength: "", directions: "" }]); openPage("reassessment"); }} startReview={startReview} />
+            ? <PatientPage patient={selectedPatient} plans={plans.filter((plan) => plan.patient_id === selectedPatient.id)} alerts={alerts.filter((alert) => alert.patient_id === selectedPatient.id)} documents={patientDocuments.filter((document) => document.patient_id === selectedPatient.id)} back={() => openPage("patients")} openReassessment={() => { setNote(""); setDocument(null); setMedications([{ name: "", strength: "", directions: "" }]); openPage("reassessment"); }} startReview={startReview} />
             : <EmptyState title="Patient record unavailable" detail="The record may not exist or may not be assigned to your account." />)}
           {page === "care-plans" && <CarePlansPage plans={plans} startReview={startReview} />}
           {page === "review" && (reviewPlan
@@ -628,8 +641,9 @@ function PatientsPage({ patients, allCount, filter, setFilter, openPatient, sear
   </>;
 }
 
-function PatientPage({ patient, plans, alerts, back, openReassessment, startReview }: {
+function PatientPage({ patient, plans, alerts, documents, back, openReassessment, startReview }: {
   patient: Patient; plans: CarePlan[]; alerts: AlertItem[]; back: () => void;
+  documents: { id: string; patient_id: string; storage_path: string; document_type: string; created_at: string }[];
   openReassessment: () => void; startReview: (plan: CarePlan) => void;
 }) {
   return <>
@@ -644,6 +658,9 @@ function PatientPage({ patient, plans, alerts, back, openReassessment, startRevi
       </div>
       <div className="card detail-card"><div className="card-heading"><div><h2>Alerts</h2><p>Alerts recorded for this patient</p></div></div>
         {alerts.length ? alerts.map((alert) => <div className="alert-row detail-alert" key={alert.id}><span className={`alert-icon ${alert.severity}`}><Bell size={15} /></span><span className="alert-copy"><b>{alert.reason}</b><span>{alert.detail || "No additional detail"}</span><small>{timeAgo(alert.created_at)} · {statusLabel(alert.status)}</small></span></div>) : <EmptyState title="No alerts" detail="No alert records are associated with this patient." />}
+      </div>
+      <div className="card detail-card"><div className="card-heading"><div><h2>Patient documents</h2><p>Private files uploaded by this patient</p></div></div>
+        {documents.length ? documents.map((document) => <div className="plan-row" key={document.id}><span className="file-icon plan-file"><FileText size={18} /></span><div className="plan-main"><b>{document.document_type}</b><small>{timeAgo(document.created_at)}</small></div><button className="button button-secondary" onClick={() => { void getCarePlanDocumentUrl(document.storage_path).then((url) => window.open(url, "_blank", "noopener,noreferrer")); }}>Open signed link</button></div>) : <EmptyState title="No patient documents" detail="Uploaded prescriptions and reports will appear here." />}
       </div>
     </div>
   </>;

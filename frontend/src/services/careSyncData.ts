@@ -5,6 +5,8 @@ import { requireSupabaseClient } from "./api/client";
 type PatientRow = Database["public"]["Tables"]["patients"]["Row"];
 type PlanRow = Database["public"]["Tables"]["care_plans"]["Row"];
 type AlertRow = Database["public"]["Tables"]["alerts"]["Row"];
+type AdherenceRow = Database["public"]["Tables"]["medication_adherence"]["Row"];
+type PatientDocumentRow = Database["public"]["Tables"]["patient_documents"]["Row"];
 
 export type PatientRecord = PatientRow;
 export type CarePlanRecord = PlanRow;
@@ -14,6 +16,8 @@ export type WorkspaceData = {
   patients: PatientRow[];
   plans: PlanRow[];
   alerts: AlertRow[];
+  adherence: AdherenceRow[];
+  documents: PatientDocumentRow[];
 };
 
 const throwIfError = <T,>(result: { data: T | null; error: { message: string } | null }): T => {
@@ -24,15 +28,19 @@ const throwIfError = <T,>(result: { data: T | null; error: { message: string } |
 
 export async function loadWorkspace(): Promise<WorkspaceData> {
   const client = requireSupabaseClient();
-  const [patientsResult, plansResult, alertsResult] = await Promise.all([
+  const [patientsResult, plansResult, alertsResult, adherenceResult, documentsResult] = await Promise.all([
     client.from("patients").select("*").order("created_at", { ascending: false }),
     client.from("care_plans").select("*").order("created_at", { ascending: false }),
     client.from("alerts").select("*").order("created_at", { ascending: false }),
+    client.from("medication_adherence").select("*").order("scheduled_for", { ascending: false }),
+    client.from("patient_documents").select("*").order("created_at", { ascending: false }),
   ]);
   return {
     patients: throwIfError(patientsResult),
     plans: throwIfError(plansResult),
     alerts: throwIfError(alertsResult),
+    adherence: throwIfError(adherenceResult),
+    documents: throwIfError(documentsResult),
   };
 }
 

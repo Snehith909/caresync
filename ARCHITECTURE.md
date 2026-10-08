@@ -11,7 +11,7 @@ React + TypeScript Doctor Portal
               |
       Private document storage
 
-Flutter Patient App -> separately configured patient API/backend
+Flutter Patient App -> same Supabase Auth, PostgreSQL, RLS, and private Storage
 ```
 
 The doctor portal connects directly to Supabase. The Flutter patient application's API and authorization setup are separate and must not be assumed to share the portal's security boundary.
@@ -63,4 +63,4 @@ Drafts remain pending until a doctor verifies the entered information against th
 
 ## 6. Operational boundary
 
-Direct browser-to-Supabase access is limited to operations protected by the supplied RLS policies. Transactional workflows not covered by the existing RPCs, AI/OCR integrations, notification delivery, and patient-app data flow need authenticated server-side orchestration and explicit authorization design. Production use requires security, privacy, compliance, region, backup, logging, retention, and organizational review. The new clinical tables are schema foundations; they do not imply that the corresponding UI workflows or integrations are already active. See [`docs/architecture.md`](./docs/architecture.md).
+Direct browser-to-Supabase access is limited to operations protected by the supplied RLS policies. Transactional workflows not covered by the existing RPCs, AI/OCR integrations, and notification delivery need authenticated server-side orchestration and explicit authorization design. Patient updates use the additive patient integration migration and remain RLS-scoped. Production use requires security, privacy, compliance, region, backup, logging, retention, and organizational review. See [`docs/architecture.md`](./docs/architecture.md).
