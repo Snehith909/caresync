@@ -2,6 +2,8 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from uuid import uuid4
 from hashlib import sha1
+import base64
+import json
 from time import time as unix_time
 from urllib.parse import urlparse
 
@@ -114,6 +116,61 @@ async def upload_to_cloudinary(
     if not secure_url:
         raise HTTPException(status_code=502, detail="Cloudinary returned no secure URL")
     return secure_url, f"{folder}/{public_id}"
+
+
+async def generate_care_plan_with_gemini(
+    condition: str,
+    document_bytes: bytes | None,
+    document_content_type: str | None,
+) -> list[dict]:
+    if not settings.gemini_api_key:
+        raise HTTPException(status_code=503, detail="Gemini is not configured")
+    prompt = (
+        "Create a draft post-discharge care plan for a doctor to review. "
+        "Use the patient's condition and prescription image if provided. "
+        "Do not diagnose, invent medicines, or change a prescription. "
+        "Return only valid JSON with this shape: "
+        '{"medicines":[{"name":"string","dose":"string","frequency":"string",'
+        '"scheduled_times":["HH:MM"],"food_instruction":"string|null",'
+        '"start_date":"YYYY-MM-DD"}]}. '
+        f"Patient condition: {condition}"
+    )
+    parts: list[dict] = [{"text": prompt}]
+    if document_bytes and document_content_type:
+        parts.append(
+            {
+                "inline_data": {
+                    "mime_type": document_content_type,
+                    "data": base64.b64encode(document_bytes).decode("ascii"),
+                }
+            }
+        )
+    endpoint = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{settings.gemini_model}:generateContent"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                endpoint,
+                params={"key": settings.gemini_api_key},
+                json={
+                    "contents": [{"parts": parts}],
+                    "generationConfig": {"responseMimeType": "application/json"},
+                },
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=502, detail="Gemini care-plan generation failed") from error
+    try:
+        text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        payload = json.loads(text)
+        medicines = payload["medicines"]
+        if not isinstance(medicines, list):
+            raise ValueError("medicines must be a list")
+        return medicines
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise HTTPException(status_code=502, detail="Gemini returned an invalid care plan") from error
 
 
 def add_medicines(

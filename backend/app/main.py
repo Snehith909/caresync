@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,6 +36,7 @@ from .schemas import (
     HealthResponse,
     MedicationEventResponse,
     MedicationStatusRequest,
+    MedicineCreate,
     PatientCreate,
     PatientResponse,
     RefillRequest,
@@ -56,6 +57,7 @@ from .services import (
     patient_for_user,
     store_upload,
     upload_to_cloudinary,
+    generate_care_plan_with_gemini,
 )
 from .transcription import transcribe_audio
 
@@ -240,6 +242,85 @@ async def upload_condition_image(
     )
 
 
+@app.post(
+    "/patients/{patient_id}/care-plans/submit",
+    response_model=CarePlanDetail,
+    status_code=201,
+)
+async def submit_care_plan(
+    patient_id: str,
+    condition: str = Form(..., min_length=1, max_length=2000),
+    prescription: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    actor: Actor = Depends(get_actor),
+) -> CarePlanDetail:
+    patient = db.get(Patient, patient_id)
+    if patient is None:
+        patient = db.scalar(select(Patient).where(Patient.user_id == patient_id))
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    require_user(actor, patient.user_id)
+    patient_id = patient.id
+    if prescription.content_type not in {"image/jpeg", "image/png", "application/pdf"}:
+        raise HTTPException(status_code=415, detail="Prescription must be JPG, PNG, or PDF")
+    data = await prescription.read(settings.max_upload_bytes + 1)
+    if len(data) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Prescription exceeds the 10 MB limit")
+    if not settings.cloudinary_url:
+        raise HTTPException(status_code=503, detail="Cloudinary storage is not configured")
+    storage_path, public_id = await upload_to_cloudinary(
+        patient_id,
+        prescription.filename or "prescription",
+        prescription.content_type,
+        data,
+    )
+    record = PrescriptionDocument(
+        patient_id=patient_id,
+        filename=prescription.filename or "prescription",
+        content_type=prescription.content_type,
+        storage_path=storage_path,
+        extraction_status="PENDING_REVIEW",
+    )
+    db.add(record)
+    db.flush()
+    medicines = await generate_care_plan_with_gemini(
+        condition,
+        data,
+        prescription.content_type,
+    )
+    plan = CarePlan(
+        patient_id=patient_id,
+        version=next_plan_version(db, patient_id),
+        status=CarePlanStatus.PENDING_REVIEW.value,
+        source_document_id=record.id,
+        condition=condition,
+    )
+    db.add(plan)
+    db.flush()
+    validated = []
+    try:
+        for item in medicines:
+            normalized = dict(item)
+            normalized.setdefault("start_date", date.today().isoformat())
+            normalized.setdefault("food_instruction", None)
+            normalized.setdefault("end_date", None)
+            normalized.setdefault("quantity", None)
+            validated.append(MedicineCreate.model_validate(normalized))
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=502, detail="Gemini returned invalid medicine data") from error
+    add_medicines(db, plan, validated)
+    db.add(
+        AuditLog(
+            actor_id=actor.id,
+            action="SUBMIT_FOR_REVIEW",
+            entity_type="CARE_PLAN",
+            entity_id=plan.id,
+        )
+    )
+    db.commit()
+    return care_plan_detail(db, plan)
+
+
 @app.post("/care-plans/{plan_id}/draft", response_model=CarePlanDetail)
 def save_draft(
     plan_id: str,
@@ -334,7 +415,7 @@ def new_care_plan_version(
 
 @app.get(
     "/patients/{patient_id}/care-plans",
-    response_model=list[CarePlanResponse],
+    response_model=list[CarePlanDetail],
 )
 def care_plan_history(
     patient_id: str,
@@ -343,15 +424,18 @@ def care_plan_history(
 ) -> list[CarePlan]:
     patient = db.get(Patient, patient_id)
     if patient is None:
+        patient = db.scalar(select(Patient).where(Patient.user_id == patient_id))
+    if patient is None:
         raise HTTPException(status_code=404, detail="Patient not found")
     require_user(actor, patient.user_id)
-    return list(
+    plans = list(
         db.scalars(
             select(CarePlan)
-            .where(CarePlan.patient_id == patient_id)
+            .where(CarePlan.patient_id == patient.id)
             .order_by(CarePlan.version.desc())
         ).all()
     )
+    return [care_plan_detail(db, plan) for plan in plans]
 
 
 @app.get("/doctor/patients", response_model=list[PatientResponse])
@@ -360,6 +444,20 @@ def doctor_patients(
     _: Actor = Depends(require_roles(Role.DOCTOR, Role.HOSPITAL_ADMIN)),
 ) -> list[Patient]:
     return list(db.scalars(select(Patient).order_by(Patient.id)).all())
+
+
+@app.get("/doctor/care-plans", response_model=list[CarePlanDetail])
+def doctor_care_plans(
+    status: str = CarePlanStatus.PENDING_REVIEW.value,
+    db: Session = Depends(get_db),
+    _: Actor = Depends(require_roles(Role.DOCTOR, Role.HOSPITAL_ADMIN)),
+) -> list[CarePlanDetail]:
+    plans = db.scalars(
+        select(CarePlan)
+        .where(CarePlan.status == status)
+        .order_by(CarePlan.created_at.desc())
+    ).all()
+    return [care_plan_detail(db, plan) for plan in plans]
 
 
 @app.get("/patients/{patient_id}/today", response_model=list[MedicationEventResponse])

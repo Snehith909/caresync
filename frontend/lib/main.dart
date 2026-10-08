@@ -114,9 +114,7 @@ class CareSyncShell extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.only(right: 16),
-            child: CircleAvatar(
-              child: Text(userInitial(gateway.currentUser)),
-            ),
+            child: CircleAvatar(child: Text(userInitial(gateway.currentUser))),
           ),
         ],
       ),
@@ -160,10 +158,36 @@ class CareSyncShell extends StatelessWidget {
   }
 }
 
-class HomeTab extends StatelessWidget {
+class HomeTab extends StatefulWidget {
   const HomeTab({required this.gateway, super.key});
 
   final AuthGateway gateway;
+
+  @override
+  State<HomeTab> createState() => _HomeTabState();
+}
+
+class _HomeTabState extends State<HomeTab> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshApprovedPlan());
+  }
+
+  Future<void> _refreshApprovedPlan() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    final userId = widget.gateway.currentUser?.id;
+    if (userId == null || !mounted) return;
+    try {
+      final plans = await CareSyncApiClient(
+        baseUrl: 'http://10.0.2.2:8000',
+        userId: userId,
+      ).getPatientCarePlans(userId);
+      if (mounted) context.read<CareSyncState>().applyApprovedCarePlan(plans);
+    } catch (_) {
+      // The local dashboard remains usable while the backend is unavailable.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -182,7 +206,7 @@ class HomeTab extends StatelessWidget {
         const SizedBox(height: 20),
         _AdherenceCard(percentage: state.adherencePercentage),
         const SizedBox(height: 24),
-        ConditionUpdateCard(gateway: gateway),
+        ConditionUpdateCard(gateway: widget.gateway),
         const SizedBox(height: 24),
         _SectionHeader(
           title: 'Today',
@@ -198,7 +222,9 @@ class HomeTab extends StatelessWidget {
             child: ListTile(
               leading: const Icon(Icons.medication_outlined),
               title: const Text('No medications added'),
-              subtitle: const Text('Add your medication schedule to get started.'),
+              subtitle: const Text(
+                'Add your medication schedule to get started.',
+              ),
               trailing: IconButton(
                 tooltip: 'Add medication',
                 icon: const Icon(Icons.add),
@@ -442,10 +468,7 @@ class _ConditionUpdateCardState extends State<ConditionUpdateCard> {
               ],
             ),
             const SizedBox(height: 12),
-            Text(
-              _voiceHint,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+            Text(_voiceHint, style: Theme.of(context).textTheme.bodySmall),
             if (hasImage) ...[
               const SizedBox(height: 16),
               ClipRRect(
@@ -474,6 +497,49 @@ class _ConditionUpdateCardState extends State<ConditionUpdateCard> {
                 ],
               ),
             ],
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: state.isProcessing
+                    ? null
+                    : () async {
+                        final userId = widget.gateway.currentUser?.id;
+                        if (userId == null) return;
+                        final careState = context.read<CareSyncState>();
+                        final messenger = ScaffoldMessenger.of(context);
+                        final submitted = await careState.submitCarePlan(
+                          patientId: userId,
+                          api: CareSyncApiClient(
+                            baseUrl: 'http://10.0.2.2:8000',
+                            userId: userId,
+                          ),
+                        );
+                        if (!mounted) return;
+                        final message = careState.submissionMessage;
+                        if (message != null) {
+                          messenger.showSnackBar(
+                            SnackBar(
+                              content: Text(message),
+                              backgroundColor: submitted ? Colors.green : null,
+                            ),
+                          );
+                        }
+                      },
+                icon: state.isProcessing
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.send_outlined),
+                label: Text(
+                  state.isProcessing
+                      ? 'Sending for doctor review...'
+                      : 'Submit to doctor',
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -1149,10 +1215,8 @@ class _AddMedicationSheetState extends State<AddMedicationSheet> {
                 decoration: const InputDecoration(labelText: 'Time of day'),
                 items: ['Morning', 'Afternoon', 'Night']
                     .map(
-                      (value) => DropdownMenuItem(
-                        value: value,
-                        child: Text(value),
-                      ),
+                      (value) =>
+                          DropdownMenuItem(value: value, child: Text(value)),
                     )
                     .toList(),
                 onChanged: (value) => setState(() => period = value!),
@@ -1182,10 +1246,7 @@ class _AddMedicationSheetState extends State<AddMedicationSheet> {
     );
   }
 
-  TextFormField _requiredField(
-    TextEditingController controller,
-    String label,
-  ) {
+  TextFormField _requiredField(TextEditingController controller, String label) {
     return TextFormField(
       controller: controller,
       decoration: InputDecoration(labelText: label),

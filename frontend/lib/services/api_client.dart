@@ -80,6 +80,33 @@ class CareSyncApiClient {
     return response.data ?? <String, dynamic>{};
   }
 
+  Future<Map<String, dynamic>> submitCarePlan({
+    required String patientId,
+    required String condition,
+    required List<int> prescriptionBytes,
+    required String filename,
+  }) async {
+    final formData = FormData.fromMap({
+      'condition': condition,
+      'prescription': MultipartFile.fromBytes(
+        prescriptionBytes,
+        filename: filename,
+      ),
+    });
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/patients/$patientId/care-plans/submit',
+      data: formData,
+    );
+    return response.data ?? <String, dynamic>{};
+  }
+
+  Future<List<dynamic>> getPatientCarePlans(String patientId) async {
+    final response = await _dio.get<List<dynamic>>(
+      '/patients/$patientId/care-plans',
+    );
+    return response.data ?? <dynamic>[];
+  }
+
   Future<List<dynamic>> getTodayMedication(String patientId) async {
     final response = await _dio.get<List<dynamic>>(
       '/patients/$patientId/today',

@@ -52,6 +52,7 @@ The backend currently provides:
 - Follow-up scheduling.
 - Restricted voice responses that defer treatment changes to clinicians.
 - Mock-ready refill requests.
+- Gemini-generated care-plan drafts that remain pending until a doctor approves them.
 
 ## Route groups
 
@@ -63,7 +64,7 @@ The backend currently provides:
 /medications       explicit taken/missed events
 /adherence         weekly adherence percentages
 /reminders         deterministic reminder queries and processing
-/doctor            patient list and alert queue
+/doctor            patient list, pending care plans, and alert queue
 /alerts            acknowledgement and resolution
 /follow-ups        scheduling and status updates
 ```
@@ -73,6 +74,9 @@ clinical state machine:
 
 1. Firebase Admin token verification should replace the development
    `X-User-Id`/`X-User-Role` identity adapter.
-2. OCR, GenAI, and FCM implementations should consume the stored
-   prescription/document, care-plan, and alert records. They must not
-   make medication decisions or mutate an approved plan silently.
+2. Gemini is called only from the backend. Set `GEMINI_API_KEY` and
+   optionally `GEMINI_MODEL` in the local `backend/.env`; never put the key
+   in Flutter or commit it. `POST /patients/{patient_id}/care-plans/submit`
+   accepts the condition and prescription image, creates a
+   `PENDING_REVIEW` draft, and `GET /doctor/care-plans` exposes it to doctor
+   clients. The existing approval route is the only way to activate it.

@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
     max_audio_upload_bytes: int = 25 * 1024 * 1024
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.0-flash"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../models/care_models.dart';
+import '../services/api_client.dart';
 
 class CareSyncState extends ChangeNotifier {
   CareSyncState() : medications = [], followUps = [];
@@ -16,13 +17,15 @@ class CareSyncState extends ChangeNotifier {
   String? lastVoicePrompt;
   Uint8List? conditionImageBytes;
   String? conditionImageName;
+  String? submissionMessage;
 
   int get takenCount => medications
       .where((medication) => medication.status == MedicationStatus.taken)
       .length;
 
-  int get adherencePercentage =>
-      medications.isEmpty ? 0 : ((takenCount / medications.length) * 100).round();
+  int get adherencePercentage => medications.isEmpty
+      ? 0
+      : ((takenCount / medications.length) * 100).round();
 
   bool get hasMissedMedication =>
       medications.any((item) => item.status == MedicationStatus.missed);
@@ -65,6 +68,67 @@ class CareSyncState extends ChangeNotifier {
     isProcessing = false;
     hasCarePlan = true;
     isPlanApproved = false;
+    notifyListeners();
+  }
+
+  Future<bool> submitCarePlan({
+    required String patientId,
+    required CareSyncApiClient api,
+  }) async {
+    if (currentCondition.trim().isEmpty || conditionImageBytes == null) {
+      submissionMessage = 'Add your condition and prescription image first.';
+      notifyListeners();
+      return false;
+    }
+
+    isProcessing = true;
+    submissionMessage = null;
+    notifyListeners();
+    try {
+      await api.submitCarePlan(
+        patientId: patientId,
+        condition: currentCondition.trim(),
+        prescriptionBytes: conditionImageBytes!,
+        filename: conditionImageName ?? 'prescription.jpg',
+      );
+      hasCarePlan = true;
+      isPlanApproved = false;
+      submissionMessage = 'Submitted for doctor review.';
+      return true;
+    } catch (_) {
+      submissionMessage = 'Submission failed. Check the backend and try again.';
+      return false;
+    } finally {
+      isProcessing = false;
+      notifyListeners();
+    }
+  }
+
+  void applyApprovedCarePlan(List<dynamic> plans) {
+    final active = plans.whereType<Map<String, dynamic>>().firstWhere(
+      (plan) => plan['status'] == 'ACTIVE',
+      orElse: () => <String, dynamic>{},
+    );
+    if (active.isEmpty) return;
+    final generated = active['medicines'] as List<dynamic>? ?? const [];
+    medications
+      ..clear()
+      ..addAll(
+        generated.whereType<Map<String, dynamic>>().map(
+          (medicine) => MedicationItem(
+            id: medicine['id'] as String? ?? '',
+            name: medicine['name'] as String? ?? 'Medication',
+            dose: medicine['dose'] as String? ?? '',
+            time: ((medicine['scheduled_times'] as List<dynamic>?) ?? const [])
+                .map((value) => value.toString())
+                .join(', '),
+            instruction: medicine['food_instruction'] as String? ?? '',
+            period: 'Today',
+          ),
+        ),
+      );
+    hasCarePlan = true;
+    isPlanApproved = true;
     notifyListeners();
   }
 
