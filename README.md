@@ -508,14 +508,21 @@ release.
 - [Project rules and healthcare safety constraints](docs/RULES.md)
 - [Development task plan](docs/TASKS.md)
 
-## 20. Flutter Patient App
+## 20. Project Structure
 
-The initial Flutter patient-app scaffold is in `lib/main.dart`. The
+- [frontend/](frontend/) — Flutter patient application
+- [backend/](backend/) — FastAPI REST API
+- [docs/](docs/) — product, architecture, design, safety, and task documentation
+
+## 21. Flutter Patient App
+
+The initial Flutter patient-app scaffold is in `frontend/lib/main.dart`. The
 project includes Android, iOS, web, Windows, macOS, and Linux targets.
 
 Install dependencies and run the app with:
 
 ```bash
+cd frontend
 flutter pub get
 flutter run
 ```
@@ -523,5 +530,18 @@ flutter run
 Run the current widget tests with:
 
 ```bash
+cd frontend
 flutter test
+```
+
+## 22. FastAPI Backend
+
+Run the backend from the repository root:
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
 ```
