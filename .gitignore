@@ -37,6 +37,7 @@ migrate_working_dir/
 backend/caresync.db
 backend/storage/
 backend/.env
+frontend/.env
 frontend/android/app/google-services.json
 
 # Symbolication related

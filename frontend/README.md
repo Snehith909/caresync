@@ -37,8 +37,16 @@ use; they should not be simulated as clinical decisions in the UI.
 
 ## Supabase configuration
 
-The app reads the public Supabase key through Dart defines. Never put a
-service-role/secret key in the app:
+The app reads the public Supabase key from either a local `.env` file or
+Dart defines. Never put a service-role/secret key in the app:
+
+```bash
+cp .env.example .env
+# edit .env with your project URL and anon key
+flutter run
+```
+
+Or pass values explicitly:
 
 ```bash
 flutter run \
