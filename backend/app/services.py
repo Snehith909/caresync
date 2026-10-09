@@ -173,6 +173,44 @@ async def generate_care_plan_with_gemini(
         raise HTTPException(status_code=502, detail="Gemini returned an invalid care plan") from error
 
 
+async def generate_companion_answer(
+    question: str,
+    language: str,
+    patient_id: str,
+    db,
+) -> str:
+    if not settings.gemini_api_key:
+        return ""
+    from .models import CarePlan, MedicationEvent
+
+    plan = active_plan(db, patient_id)
+    context = "No active approved care plan is available."
+    if plan is not None:
+        context = f"Approved care plan condition: {plan.condition or 'not specified'}."
+    prompt = (
+        "You are CareSync AI Companion. Answer in the requested language. "
+        "Use only the approved care-plan context below. Do not diagnose, "
+        "prescribe, change dosage, or invent facts. Encourage a doctor for "
+        "new symptoms. Keep the answer short and easy to understand.\n"
+        f"Language: {language}\nContext: {context}\nPatient question: {question}"
+    )
+    endpoint = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{settings.gemini_model}:generateContent"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                endpoint,
+                params={"key": settings.gemini_api_key},
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+            )
+            response.raise_for_status()
+            return response.json()["candidates"][0]["content"]["parts"][0]["text"]
+    except (httpx.HTTPError, KeyError, IndexError, TypeError):
+        return ""
+
+
 def add_medicines(
     db: Session,
     plan: CarePlan,

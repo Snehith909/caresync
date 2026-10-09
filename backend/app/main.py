@@ -23,6 +23,10 @@ from .models import (
     PrescriptionDocument,
     Role,
     User,
+    CompanionCheckIn,
+    CompanionConversation,
+    DoctorRequest,
+    HealthSummary,
 )
 from .schemas import (
     AdherenceResponse,
@@ -47,6 +51,14 @@ from .schemas import (
     TranscriptionResponse,
     VoiceRequest,
     VoiceResponse,
+    CompanionCheckInRequest,
+    CompanionCheckInResponse,
+    CompanionConversationRequest,
+    CompanionConversationResponse,
+    DoctorRequestCreate,
+    DoctorRequestResponse,
+    HealthSummaryResponse,
+    HealthSummarySubmitResponse,
 )
 from .services import (
     active_plan,
@@ -58,6 +70,7 @@ from .services import (
     store_upload,
     upload_to_cloudinary,
     generate_care_plan_with_gemini,
+    generate_companion_answer,
 )
 from .transcription import transcribe_audio
 
@@ -783,6 +796,222 @@ def voice_answer(
         ),
         requires_clinician=False,
     )
+
+
+@app.post(
+    "/patients/{patient_id}/companion/check-ins",
+    response_model=CompanionCheckInResponse,
+    status_code=201,
+)
+def create_companion_check_in(
+    patient_id: str,
+    payload: CompanionCheckInRequest,
+    db: Session = Depends(get_db),
+    actor: Actor = Depends(get_actor),
+) -> CompanionCheckIn:
+    patient = db.get(Patient, patient_id)
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    require_user(actor, patient.user_id)
+    check_in = CompanionCheckIn(patient_id=patient_id, **payload.model_dump())
+    db.add(check_in)
+    db.commit()
+    db.refresh(check_in)
+    return check_in
+
+
+@app.get(
+    "/patients/{patient_id}/companion/check-ins",
+    response_model=list[CompanionCheckInResponse],
+)
+def list_companion_check_ins(
+    patient_id: str,
+    db: Session = Depends(get_db),
+    actor: Actor = Depends(get_actor),
+) -> list[CompanionCheckIn]:
+    patient = db.get(Patient, patient_id)
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    require_user(actor, patient.user_id)
+    return list(
+        db.scalars(
+            select(CompanionCheckIn)
+            .where(CompanionCheckIn.patient_id == patient_id)
+            .order_by(CompanionCheckIn.created_at.desc())
+            .limit(50)
+        ).all()
+    )
+
+
+@app.post(
+    "/patients/{patient_id}/companion/conversations",
+    response_model=CompanionConversationResponse,
+    status_code=201,
+)
+async def create_companion_conversation(
+    patient_id: str,
+    payload: CompanionConversationRequest,
+    db: Session = Depends(get_db),
+    actor: Actor = Depends(get_actor),
+) -> CompanionConversationResponse:
+    patient = db.get(Patient, patient_id)
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    require_user(actor, patient.user_id)
+    question = payload.question.strip()
+    emergency_terms = ("chest pain", "trouble breathing", "cannot breathe", "unconscious")
+    requires_clinician = any(term in question.lower() for term in emergency_terms)
+    if requires_clinician:
+        answer = (
+            "This may need urgent medical attention. Contact local emergency "
+            "services or go to the nearest emergency department now."
+        )
+    else:
+        answer = (
+            "I can explain information in your approved care plan, but I cannot "
+            "diagnose you or change medicines. Please contact your doctor for "
+            "new symptoms or treatment changes."
+        )
+        if settings.gemini_api_key:
+            try:
+                generated = await generate_companion_answer(
+                    question=question,
+                    language=payload.language,
+                    patient_id=patient_id,
+                    db=db,
+                )
+                if generated.strip():
+                    answer = generated.strip()
+            except HTTPException:
+                pass
+    conversation = CompanionConversation(
+        patient_id=patient_id,
+        language=payload.language,
+        question=question,
+        answer=answer,
+    )
+    db.add(conversation)
+    db.commit()
+    db.refresh(conversation)
+    return CompanionConversationResponse(
+        id=conversation.id,
+        question=conversation.question,
+        answer=conversation.answer,
+        language=conversation.language,
+        created_at=conversation.created_at,
+        requires_clinician=requires_clinician,
+    )
+
+
+@app.post(
+    "/patients/{patient_id}/companion/summaries",
+    response_model=HealthSummaryResponse,
+    status_code=201,
+)
+def create_health_summary(
+    patient_id: str,
+    db: Session = Depends(get_db),
+    actor: Actor = Depends(get_actor),
+) -> HealthSummaryResponse:
+    patient = db.get(Patient, patient_id)
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    require_user(actor, patient.user_id)
+    check_ins = list(
+        db.scalars(
+            select(CompanionCheckIn)
+            .where(CompanionCheckIn.patient_id == patient_id)
+            .order_by(CompanionCheckIn.created_at.desc())
+            .limit(20)
+        ).all()
+    )
+    if not check_ins:
+        raise HTTPException(status_code=422, detail="Record a check-in first")
+    lines = ["AI-generated patient-reported summary:", ""]
+    for item in reversed(check_ins):
+        details = f" ({item.details})" if item.details else ""
+        lines.append(f"- {item.category}: {item.response}{details} [{item.created_at.isoformat()}]")
+    summary = HealthSummary(patient_id=patient_id, summary="\n".join(lines))
+    db.add(summary)
+    db.commit()
+    db.refresh(summary)
+    return HealthSummaryResponse.model_validate(summary)
+
+
+@app.post(
+    "/patients/{patient_id}/companion/summaries/{summary_id}/submit",
+    response_model=HealthSummarySubmitResponse,
+)
+def submit_health_summary(
+    patient_id: str,
+    summary_id: str,
+    db: Session = Depends(get_db),
+    actor: Actor = Depends(get_actor),
+) -> HealthSummary:
+    patient = db.get(Patient, patient_id)
+    summary = db.get(HealthSummary, summary_id)
+    if patient is None or summary is None or summary.patient_id != patient_id:
+        raise HTTPException(status_code=404, detail="Health summary not found")
+    require_user(actor, patient.user_id)
+    summary.status = "SUBMITTED"
+    summary.submitted_at = datetime.utcnow()
+    db.commit()
+    db.refresh(summary)
+    return summary
+
+
+@app.get(
+    "/doctor/companion/requests",
+    response_model=list[DoctorRequestResponse],
+)
+def doctor_companion_requests(
+    db: Session = Depends(get_db),
+    _: Actor = Depends(require_roles(Role.DOCTOR, Role.HOSPITAL_ADMIN)),
+) -> list[DoctorRequest]:
+    return list(
+        db.scalars(
+            select(DoctorRequest).order_by(DoctorRequest.created_at.desc())
+        ).all()
+    )
+
+
+@app.get(
+    "/doctor/companion/summaries",
+    response_model=list[HealthSummaryResponse],
+)
+def doctor_companion_summaries(
+    db: Session = Depends(get_db),
+    _: Actor = Depends(require_roles(Role.DOCTOR, Role.HOSPITAL_ADMIN)),
+) -> list[HealthSummary]:
+    return list(
+        db.scalars(
+            select(HealthSummary)
+            .where(HealthSummary.status == "SUBMITTED")
+            .order_by(HealthSummary.submitted_at.desc())
+        ).all()
+    )
+
+
+@app.post(
+    "/patients/{patient_id}/companion/doctor-requests",
+    response_model=DoctorRequestResponse,
+    status_code=201,
+)
+def create_doctor_request(
+    patient_id: str,
+    payload: DoctorRequestCreate,
+    db: Session = Depends(get_db),
+    actor: Actor = Depends(get_actor),
+) -> DoctorRequest:
+    patient = db.get(Patient, patient_id)
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    require_user(actor, patient.user_id)
+    request = DoctorRequest(patient_id=patient_id, **payload.model_dump())
+    db.add(request)
+    db.commit()
+    db.refresh(request)
+    return request
 
 
 @app.post(

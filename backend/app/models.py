@@ -131,6 +131,50 @@ class Alert(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class CompanionCheckIn(Base):
+    __tablename__ = "companion_check_ins"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id"))
+    category: Mapped[str] = mapped_column(String(40))
+    response: Mapped[str] = mapped_column(String(200))
+    details: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CompanionConversation(Base):
+    __tablename__ = "companion_conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id"))
+    language: Mapped[str] = mapped_column(String(20), default="English")
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class HealthSummary(Base):
+    __tablename__ = "health_summaries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id"))
+    summary: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class DoctorRequest(Base):
+    __tablename__ = "doctor_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.id"))
+    request_type: Mapped[str] = mapped_column(String(40))
+    message: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="SUBMITTED")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class FollowUp(Base):
     __tablename__ = "follow_ups"
 

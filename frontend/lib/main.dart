@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -166,7 +167,7 @@ class CareSyncShell extends StatelessWidget {
         children: [
           HomeTab(gateway: gateway),
           const ProgressTab(),
-          const VoiceTab(),
+          VoiceTab(gateway: gateway),
           ProfileTab(gateway: gateway),
         ],
       ),
@@ -1005,7 +1006,9 @@ class ProgressTab extends StatelessWidget {
 }
 
 class VoiceTab extends StatefulWidget {
-  const VoiceTab({super.key});
+  const VoiceTab({required this.gateway, super.key});
+
+  final AuthGateway gateway;
 
   @override
   State<VoiceTab> createState() => _VoiceTabState();
@@ -1013,107 +1016,444 @@ class VoiceTab extends StatefulWidget {
 
 class _VoiceTabState extends State<VoiceTab> {
   final controller = TextEditingController();
+  final recorder = AudioRecorder();
+  final speaker = FlutterTts();
+  String language = 'English';
+  String? answer;
+  String? question;
+  String? error;
+  bool isListening = false;
+  bool isLoading = false;
+  bool speakResponses = true;
 
   @override
   void dispose() {
     controller.dispose();
+    recorder.dispose();
+    speaker.stop();
     super.dispose();
+  }
+
+  Future<void> _toggleListening() async {
+    if (isListening) {
+      await _stopListening();
+      return;
+    }
+    if (!await recorder.hasPermission()) {
+      setState(
+        () => error =
+            'Microphone permission is required. You can use the large check-in buttons instead.',
+      );
+      return;
+    }
+    final directory = await getTemporaryDirectory();
+    await recorder.start(
+      const RecordConfig(
+        encoder: AudioEncoder.wav,
+        sampleRate: 16000,
+        numChannels: 1,
+      ),
+      path: '${directory.path}${Platform.pathSeparator}companion.wav',
+    );
+    setState(() {
+      isListening = true;
+      error = null;
+    });
+  }
+
+  Future<void> _stopListening() async {
+    final path = await recorder.stop();
+    setState(() => isListening = false);
+    if (path == null) return;
+    setState(() => isLoading = true);
+    try {
+      final response =
+          await CareSyncApiClient(
+            baseUrl: 'http://10.0.2.2:8000',
+            userId: widget.gateway.currentUser?.id,
+          ).transcribeAudio(
+            bytes: await File(path).readAsBytes(),
+            filename: 'companion.wav',
+          );
+      final text = (response['text'] as String? ?? '').trim();
+      if (text.isEmpty) {
+        throw StateError('No speech was recognized.');
+      }
+      controller.text = text;
+      await _ask(text);
+    } catch (exception) {
+      if (mounted) {
+        setState(
+          () => error =
+              'I could not understand that. Please try again or use a button.',
+        );
+      }
+    } finally {
+      try {
+        await File(path).delete();
+      } catch (_) {}
+      if (mounted) {
+        setState(() => isLoading = false);
+      }
+    }
+  }
+
+  Future<void> _ask(String value) async {
+    final patientService = const SupabasePatientService();
+    final patient = await patientService.getPatient();
+    final result =
+        await CareSyncApiClient(
+          baseUrl: 'http://10.0.2.2:8000',
+          userId: widget.gateway.currentUser?.id,
+        ).askCompanion(
+          patientId: patient['id'] as String,
+          question: value,
+          language: language,
+        );
+    if (!mounted) return;
+    final response =
+        result['answer'] as String? ?? 'No response was available.';
+    setState(() {
+      question = value;
+      answer = response;
+      error = null;
+    });
+    if (speakResponses) await _speak(response);
+  }
+
+  Future<void> _speak(String value) async {
+    await speaker.stop();
+    final locale = switch (language) {
+      'Hindi' => 'hi-IN',
+      'Kannada' => 'kn-IN',
+      _ => 'en-US',
+    };
+    await speaker.setLanguage(locale);
+    await speaker.speak(value);
+  }
+
+  Future<void> _recordCheckIn(String category, String response) async {
+    try {
+      final patient = await const SupabasePatientService().getPatient();
+      await CareSyncApiClient(
+        baseUrl: 'http://10.0.2.2:8000',
+        userId: widget.gateway.currentUser?.id,
+      ).createCompanionCheckIn(
+        patientId: patient['id'] as String,
+        category: category,
+        response: response,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$response recorded safely.')));
+      }
+    } catch (exception) {
+      if (mounted) {
+        setState(
+          () => error = 'Could not save this check-in. Please try again.',
+        );
+      }
+    }
+  }
+
+  Future<void> _prepareSummary() async {
+    try {
+      final patient = await const SupabasePatientService().getPatient();
+      final result = await CareSyncApiClient(
+        baseUrl: 'http://10.0.2.2:8000',
+        userId: widget.gateway.currentUser?.id,
+      ).prepareHealthSummary(patientId: patient['id'] as String);
+      if (!mounted) return;
+      final summary = result['summary'] as String? ?? '';
+      final summaryId = result['id'] as String?;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Review my health summary'),
+          content: SingleChildScrollView(child: Text(summary)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+            FilledButton(
+              onPressed: summaryId == null
+                  ? null
+                  : () async {
+                      try {
+                        final patient = await const SupabasePatientService()
+                            .getPatient();
+                        await CareSyncApiClient(
+                          baseUrl: 'http://10.0.2.2:8000',
+                          userId: widget.gateway.currentUser?.id,
+                        ).submitHealthSummary(
+                          patientId: patient['id'] as String,
+                          summaryId: summaryId,
+                        );
+                      } catch (_) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'The summary could not be submitted.',
+                              ),
+                            ),
+                          );
+                        }
+                        return;
+                      }
+                      Navigator.pop(dialogContext);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Summary saved for doctor review.'),
+                        ),
+                      );
+                    },
+              child: const Text('Confirm'),
+            ),
+          ],
+        ),
+      );
+    } catch (_) {
+      if (mounted) {
+        setState(() => error = 'Record a check-in before preparing a summary.');
+      }
+    }
+  }
+
+  Future<void> _contactDoctor() async {
+    try {
+      final patient = await const SupabasePatientService().getPatient();
+      await CareSyncApiClient(
+        baseUrl: 'http://10.0.2.2:8000',
+        userId: widget.gateway.currentUser?.id,
+      ).contactDoctor(
+        patientId: patient['id'] as String,
+        message: answer ?? 'I would like to discuss my health with my doctor.',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Your request was submitted to the care team.'),
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted)
+        setState(() => error = 'The doctor request could not be submitted.');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<CareSyncState>();
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       children: [
         Text(
-          'Ask about your care',
+          'CareSync AI Companion',
           style: Theme.of(
             context,
           ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 8),
-        const Text(
-          'Ask questions about your approved care plan. CareSync will guide you to your doctor for clinical decisions.',
+        Text(
+          'Hello ${widget.gateway.currentUser?.displayName ?? 'there'}. '
+          'I can explain your approved care plan and record how you feel. '
+          'I do not diagnose or change treatment.',
         ),
-        const SizedBox(height: 28),
-        Center(
-          child: CircleAvatar(
-            radius: 48,
-            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-            child: Icon(
-              Icons.mic,
-              size: 46,
-              color: Theme.of(context).colorScheme.primary,
+        const SizedBox(height: 16),
+        DropdownButtonFormField<String>(
+          value: language,
+          decoration: const InputDecoration(
+            labelText: 'Preferred language',
+            prefixIcon: Icon(Icons.language),
+          ),
+          items: ['English', 'Kannada', 'Hindi']
+              .map((item) => DropdownMenuItem(value: item, child: Text(item)))
+              .toList(),
+          onChanged: (value) => setState(() => language = value ?? 'English'),
+        ),
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          onPressed: isLoading ? null : _toggleListening,
+          icon: Icon(isListening ? Icons.stop : Icons.mic),
+          label: Text(isListening ? 'Stop speaking' : 'Tap to Talk'),
+          style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(64)),
+        ),
+        if (isListening)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text('Listening... speak clearly, then tap Stop speaking.'),
+          ),
+        const SizedBox(height: 12),
+        SwitchListTile(
+          title: const Text('Speak responses aloud'),
+          value: speakResponses,
+          onChanged: (value) async {
+            setState(() => speakResponses = value);
+            if (!value) await speaker.stop();
+          },
+        ),
+        if (isLoading) const LinearProgressIndicator(),
+        if (error != null)
+          Card(
+            color: Colors.red.shade50,
+            child: ListTile(
+              leading: const Icon(Icons.error_outline, color: Colors.red),
+              title: Text(error!),
+              trailing: IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => setState(() => error = null),
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 24),
-        TextField(
-          controller: controller,
-          maxLines: 3,
-          decoration: const InputDecoration(
-            hintText: 'What would you like to know?',
-            prefixIcon: Icon(Icons.chat_bubble_outline),
-          ),
-        ),
         const SizedBox(height: 12),
-        FilledButton.icon(
-          onPressed: () {
-            final question = controller.text.trim();
-            if (question.isNotEmpty) {
-              context.read<CareSyncState>().askVoice(question);
-              controller.clear();
-            }
-          },
-          icon: const Icon(Icons.send),
-          label: const Text('Ask CareSync'),
-        ),
-        const SizedBox(height: 24),
         Text(
-          'Try asking',
+          'How are you today?',
           style: Theme.of(
             context,
           ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 24),
         Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children:
-              [
-                    'When is my next medicine?',
-                    'Should I take it after food?',
-                    'What is my evening medicine?',
-                  ]
-                  .map(
-                    (prompt) => ActionChip(
-                      label: Text(prompt),
-                      onPressed: () =>
-                          context.read<CareSyncState>().askVoice(prompt),
-                    ),
-                  )
-                  .toList(),
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            _companionButton('😊 Feeling Better', 'wellness', 'Feeling better'),
+            _companionButton('😐 No Change', 'wellness', 'No change'),
+            _companionButton('😟 Feeling Worse', 'wellness', 'Feeling worse'),
+            _companionButton('🤕 I Have Pain', 'symptom', 'I have pain'),
+            _companionButton(
+              '💊 Medication Check-in',
+              'medication',
+              'Medication check-in',
+            ),
+            _companionButton(
+              '🏃 Exercise Check-in',
+              'exercise',
+              'Exercise check-in',
+            ),
+          ],
         ),
-        if (state.lastVoicePrompt != null) ...[
+        const SizedBox(height: 20),
+        OutlinedButton.icon(
+          onPressed: _showSymptomPicker,
+          icon: const Icon(Icons.accessibility_new),
+          label: const Text('Report a symptom'),
+        ),
+        OutlinedButton.icon(
+          onPressed: _contactDoctor,
+          icon: const Icon(Icons.medical_services_outlined),
+          label: const Text('Contact my doctor'),
+        ),
+        OutlinedButton.icon(
+          onPressed: _prepareSummary,
+          icon: const Icon(Icons.summarize_outlined),
+          label: const Text('Prepare my health summary'),
+        ),
+        if (question != null || answer != null) ...[
           const SizedBox(height: 24),
           Card(
             color: Theme.of(context).colorScheme.primaryContainer,
-            child: ListTile(
-              leading: const Icon(Icons.auto_awesome),
-              title: Text('You asked: ${state.lastVoicePrompt}'),
-              subtitle: const Text(
-                'Your approved care plan contains the schedule. For treatment changes or new symptoms, please contact your doctor.',
-              ),
-              trailing: IconButton(
-                onPressed: context.read<CareSyncState>().clearVoicePrompt,
-                icon: const Icon(Icons.close),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('You said: ${question ?? ''}'),
+                  const SizedBox(height: 8),
+                  Text(answer ?? ''),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: answer == null
+                            ? null
+                            : () => _speak(answer!),
+                        icon: const Icon(Icons.volume_up),
+                        label: const Text('Listen to response'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: answer == null
+                            ? null
+                            : () => _speak(answer!),
+                        icon: const Icon(Icons.replay),
+                        label: const Text('Repeat'),
+                      ),
+                      TextButton.icon(
+                        onPressed: speaker.stop,
+                        icon: const Icon(Icons.stop),
+                        label: const Text('Stop'),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
         ],
       ],
     );
+  }
+
+  Widget _companionButton(String label, String category, String response) {
+    return SizedBox(
+      width: 170,
+      child: OutlinedButton(
+        onPressed: () => _recordCheckIn(category, response),
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.all(16),
+          minimumSize: const Size(0, 64),
+        ),
+        child: Text(label, textAlign: TextAlign.center),
+      ),
+    );
+  }
+
+  Future<void> _showSymptomPicker() async {
+    const areas = ['Head', 'Chest', 'Abdomen', 'Back', 'Arms', 'Legs'];
+    final result = await showDialog<(String, String)>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Where do you feel a symptom?'),
+        content: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: areas
+              .map(
+                (area) => OutlinedButton(
+                  onPressed: () =>
+                      Navigator.pop(dialogContext, (area, 'Not rated')),
+                  child: Text(area),
+                ),
+              )
+              .toList(),
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    final intensity = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('How strong is it?'),
+        content: Wrap(
+          spacing: 8,
+          children: ['Mild', 'Moderate', 'Severe']
+              .map(
+                (value) => OutlinedButton(
+                  onPressed: () => Navigator.pop(dialogContext, value),
+                  child: Text(value),
+                ),
+              )
+              .toList(),
+        ),
+      ),
+    );
+    if (intensity != null) {
+      await _recordCheckIn('symptom', '${result.$1} symptom ($intensity)');
+    }
   }
 }
 

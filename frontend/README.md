@@ -24,6 +24,9 @@ The current MVP includes:
 - Doctor-approval messaging; patients cannot activate a generated plan.
 - Follow-up and notification surfaces.
 - Voice-safe care-plan question surface.
+- CareSync AI Companion with voice transcription, spoken responses,
+  multilingual selection, one-tap check-ins, symptom selection, doctor
+  requests, and patient-reviewed health summaries.
 - Profile, nominee, privacy, and language settings surfaces.
 - Provider state in `lib/state/care_sync_state.dart`.
 - Dio API boundary in `lib/services/api_client.dart`.

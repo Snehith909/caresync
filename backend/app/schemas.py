@@ -151,6 +151,58 @@ class VoiceResponse(BaseModel):
     requires_clinician: bool
 
 
+class CompanionCheckInRequest(BaseModel):
+    category: str = Field(min_length=1, max_length=40)
+    response: str = Field(min_length=1, max_length=200)
+    details: str | None = Field(default=None, max_length=2000)
+
+
+class CompanionCheckInResponse(CompanionCheckInRequest):
+    id: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CompanionConversationRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    language: str = Field(default="English", min_length=2, max_length=20)
+
+
+class CompanionConversationResponse(BaseModel):
+    id: str
+    question: str
+    answer: str
+    language: str
+    created_at: datetime
+    requires_clinician: bool
+
+
+class HealthSummaryResponse(BaseModel):
+    id: str
+    summary: str
+    status: str
+    created_at: datetime
+    submitted_at: datetime | None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class HealthSummarySubmitResponse(HealthSummaryResponse):
+    pass
+
+
+class DoctorRequestCreate(BaseModel):
+    request_type: str = Field(default="COMPANION", min_length=1, max_length=40)
+    message: str = Field(min_length=1, max_length=4000)
+
+
+class DoctorRequestResponse(DoctorRequestCreate):
+    id: str
+    patient_id: str
+    status: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
 class RefillRequest(BaseModel):
     medicine_id: str
     quantity: int = Field(ge=1)

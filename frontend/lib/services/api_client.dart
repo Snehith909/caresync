@@ -149,4 +149,63 @@ class CareSyncApiClient {
     );
     return response.data ?? <String, dynamic>{};
   }
+
+  Future<Map<String, dynamic>> createCompanionCheckIn({
+    required String patientId,
+    required String category,
+    required String response,
+    String? details,
+  }) async {
+    final result = await _dio.post<Map<String, dynamic>>(
+      '/patients/$patientId/companion/check-ins',
+      data: {
+        'category': category,
+        'response': response,
+        if (details != null && details.trim().isNotEmpty) 'details': details,
+      },
+    );
+    return result.data ?? <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> askCompanion({
+    required String patientId,
+    required String question,
+    required String language,
+  }) async {
+    final result = await _dio.post<Map<String, dynamic>>(
+      '/patients/$patientId/companion/conversations',
+      data: {'question': question, 'language': language},
+    );
+    return result.data ?? <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> prepareHealthSummary({
+    required String patientId,
+  }) async {
+    final result = await _dio.post<Map<String, dynamic>>(
+      '/patients/$patientId/companion/summaries',
+    );
+    return result.data ?? <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> submitHealthSummary({
+    required String patientId,
+    required String summaryId,
+  }) async {
+    final result = await _dio.post<Map<String, dynamic>>(
+      '/patients/$patientId/companion/summaries/$summaryId/submit',
+    );
+    return result.data ?? <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> contactDoctor({
+    required String patientId,
+    required String message,
+  }) async {
+    final result = await _dio.post<Map<String, dynamic>>(
+      '/patients/$patientId/companion/doctor-requests',
+      data: {'message': message, 'request_type': 'COMPANION'},
+    );
+    return result.data ?? <String, dynamic>{};
+  }
 }
