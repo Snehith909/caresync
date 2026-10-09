@@ -26,6 +26,7 @@ class MedicationItem {
       case 'Morning':
         return Icons.wb_sunny_outlined;
       case 'Afternoon':
+      case 'Noon':
         return Icons.wb_twilight_outlined;
       default:
         return Icons.nights_stay_outlined;

@@ -19,6 +19,9 @@ class CareSyncState extends ChangeNotifier {
   Uint8List? conditionImageBytes;
   String? conditionImageName;
   String? submissionMessage;
+  final Map<String, Map<String, MedicationStatus>> _dailyMedicationStatus = {};
+  final Set<String> _deliveryRequests = {};
+  DateTime? _medicationPlanStartedOn;
 
   int get takenCount => medications
       .where((medication) => medication.status == MedicationStatus.taken)
@@ -31,6 +34,32 @@ class CareSyncState extends ChangeNotifier {
   bool get hasMissedMedication =>
       medications.any((item) => item.status == MedicationStatus.missed);
 
+  bool get hasThreeDayMissedStreak {
+    if (medications.isEmpty) return false;
+    final today = DateTime.now();
+    final days = List<DateTime>.generate(
+      3,
+      (index) => DateTime(today.year, today.month, today.day - index),
+    );
+    final startedOn = _medicationPlanStartedOn;
+    if (startedOn == null ||
+        days.any(
+          (day) => day.isBefore(
+            DateTime(startedOn.year, startedOn.month, startedOn.day),
+          ),
+        )) {
+      return false;
+    }
+    return days.every((day) => dayMedicationPercentage(day) == 0);
+  }
+
+  String get adherenceReminder =>
+      'You have missed medicine doses for 3 days. A reminder should be '
+      'reviewed by you and your doctor.';
+
+  bool deliveryRequested(String medicationId) =>
+      _deliveryRequests.contains(medicationId);
+
   void selectTab(int index) {
     selectedTab = index;
     notifyListeners();
@@ -39,6 +68,54 @@ class CareSyncState extends ChangeNotifier {
   void markMedication(String id, MedicationStatus status) {
     final medication = medications.firstWhere((item) => item.id == id);
     medication.status = status;
+    _dailyMedicationStatus.putIfAbsent(_dateKey(DateTime.now()), () => {})[id] =
+        status;
+    notifyListeners();
+  }
+
+  int dayMedicationPercentage(DateTime day) {
+    if (medications.isEmpty) return 0;
+    final statuses = _dailyMedicationStatus[_dateKey(day)] ?? const {};
+    final taken = medications.where(
+      (medication) =>
+          statuses[medication.id] == MedicationStatus.taken ||
+          (isSameDay(day, DateTime.now()) &&
+              medication.status == MedicationStatus.taken),
+    );
+    return ((taken.length / medications.length) * 100).round();
+  }
+
+  String dayMedicationStatus(DateTime day) {
+    final percentage = dayMedicationPercentage(day);
+    if (isSameDay(day, DateTime.now())) return 'Today';
+    if (percentage == 100) return 'All doses completed';
+    if (percentage == 0) return 'No doses recorded';
+    return 'Needs attention';
+  }
+
+  int periodTakenCount(String period) => medications
+      .where(
+        (medication) =>
+            periodBucket(medication.period) == periodBucket(period) &&
+            medication.status == MedicationStatus.taken,
+      )
+      .length;
+
+  int periodTotalCount(String period) => medications
+      .where(
+        (medication) => periodBucket(medication.period) == periodBucket(period),
+      )
+      .length;
+
+  String periodBucket(String period) {
+    final normalized = period.trim().toLowerCase();
+    if (normalized == 'afternoon' || normalized == 'noon') return 'noon';
+    if (normalized == 'night' || normalized == 'evening') return 'night';
+    return 'morning';
+  }
+
+  void requestDelivery(String medicationId) {
+    _deliveryRequests.add(medicationId);
     notifyListeners();
   }
 
@@ -64,6 +141,7 @@ class CareSyncState extends ChangeNotifier {
     required String instruction,
     required String period,
   }) {
+    _medicationPlanStartedOn ??= DateTime.now();
     medications.add(
       MedicationItem(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
@@ -196,6 +274,7 @@ class CareSyncState extends ChangeNotifier {
       );
     hasCarePlan = true;
     isPlanApproved = true;
+    _medicationPlanStartedOn ??= DateTime.now();
     notifyListeners();
   }
 
@@ -232,4 +311,14 @@ class CareSyncState extends ChangeNotifier {
     lastVoicePrompt = null;
     notifyListeners();
   }
+
+  String _dateKey(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}-'
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
+
+  bool isSameDay(DateTime first, DateTime second) =>
+      first.year == second.year &&
+      first.month == second.month &&
+      first.day == second.day;
 }

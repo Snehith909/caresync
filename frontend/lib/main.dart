@@ -21,6 +21,23 @@ String userInitial(CareUser? user) {
   return value.isEmpty ? 'U' : value.substring(0, 1).toUpperCase();
 }
 
+String dayName(DateTime date) {
+  const names = [
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday',
+  ];
+  return names[date.weekday - 1];
+}
+
+String shortDate(DateTime date) =>
+    '${date.day.toString().padLeft(2, '0')}/'
+    '${date.month.toString().padLeft(2, '0')}/${date.year}';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -162,10 +179,11 @@ class CareSyncShell extends StatelessWidget {
   }
 
   void _showNotifications(BuildContext context) {
+    final state = context.read<CareSyncState>();
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (_) => const Padding(
+      builder: (_) => Padding(
         padding: EdgeInsets.fromLTRB(24, 8, 24, 32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -175,8 +193,18 @@ class CareSyncShell extends StatelessWidget {
               'Notifications',
               style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
-            SizedBox(height: 16),
-            Text('No notifications yet.'),
+            const SizedBox(height: 16),
+            if (state.hasThreeDayMissedStreak)
+              const ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.warning_amber, color: Colors.orange),
+                title: Text('Medication reminder'),
+                subtitle: Text(
+                  'Three days of missed doses need your attention and doctor follow-up.',
+                ),
+              )
+            else
+              const Text('No notifications yet.'),
           ],
         ),
       ),
@@ -217,11 +245,17 @@ class _HomeTabState extends State<HomeTab> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<CareSyncState>();
+    final today = DateTime.now();
+    const periods = ['Morning', 'Noon', 'Night'];
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       children: [
         Text('Good morning', style: Theme.of(context).textTheme.bodyLarge),
         const SizedBox(height: 4),
+        Text(
+          '${dayName(today)}, ${shortDate(today)}',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
         Text(
           'Your care, in sync.',
           style: Theme.of(
@@ -241,6 +275,7 @@ class _HomeTabState extends State<HomeTab> {
           ),
         ),
         const SizedBox(height: 8),
+        if (state.hasThreeDayMissedStreak) const _ThreeDayReminderBanner(),
         if (state.hasMissedMedication) const _EscalationBanner(),
         if (state.medications.isEmpty)
           Card(
@@ -258,12 +293,27 @@ class _HomeTabState extends State<HomeTab> {
             ),
           )
         else
-          ...state.medications.map(
-            (medication) => Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: MedicationCard(medication: medication),
-            ),
-          ),
+          ...periods.expand((period) {
+            final medications = state.medications.where(
+              (medication) =>
+                  state.periodBucket(medication.period) ==
+                  state.periodBucket(period),
+            );
+            if (medications.isEmpty) return <Widget>[];
+            return <Widget>[
+              _MedicationPeriodHeader(
+                period: period,
+                completed: state.periodTakenCount(period),
+                total: state.periodTotalCount(period),
+              ),
+              ...medications.map(
+                (medication) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: MedicationCard(medication: medication),
+                ),
+              ),
+            ];
+          }),
         const SizedBox(height: 8),
         if (state.medications.isNotEmpty)
           Align(
@@ -646,8 +696,10 @@ class MedicationCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final careState = context.watch<CareSyncState>();
     final isTaken = medication.status == MedicationStatus.taken;
     final isMissed = medication.status == MedicationStatus.missed;
+    final deliveryRequested = careState.deliveryRequested(medication.id);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -728,6 +780,22 @@ class MedicationCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 4),
+              OutlinedButton.icon(
+                onPressed: deliveryRequested
+                    ? null
+                    : () => _requestDelivery(context),
+                icon: Icon(
+                  deliveryRequested
+                      ? Icons.local_shipping
+                      : Icons.delivery_dining_outlined,
+                ),
+                label: Text(
+                  deliveryRequested
+                      ? 'Delivery requested'
+                      : 'Medicine not available? Request delivery',
+                ),
+              ),
+              const SizedBox(height: 4),
               TextButton.icon(
                 onPressed: () => context.read<CareSyncState>().askVoice(
                   'When should I take ${medication.name}?',
@@ -739,6 +807,34 @@ class MedicationCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _requestDelivery(BuildContext context) async {
+    final shouldRequest = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Request medicine delivery'),
+        content: Text(
+          'Send a delivery request for ${medication.name} (${medication.dose}) '
+          'to your care team?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Request delivery'),
+          ),
+        ],
+      ),
+    );
+    if (shouldRequest != true || !context.mounted) return;
+    context.read<CareSyncState>().requestDelivery(medication.id);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Delivery request sent to your care team.')),
     );
   }
 }
@@ -788,25 +884,55 @@ class _ActionFeedback extends StatelessWidget {
   }
 }
 
+class _MedicationPeriodHeader extends StatelessWidget {
+  const _MedicationPeriodHeader({
+    required this.period,
+    required this.completed,
+    required this.total,
+  });
+
+  final String period;
+  final int completed;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 8),
+      child: Row(
+        children: [
+          Text(
+            period,
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+          ),
+          const Spacer(),
+          Text(
+            '$completed/$total completed',
+            style: TextStyle(
+              color: colors.primary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class ProgressTab extends StatelessWidget {
   const ProgressTab({super.key});
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<CareSyncState>();
-    final days = [
-      const DayProgress(day: 'Monday', value: 100, status: 'Taken'),
-      const DayProgress(day: 'Tuesday', value: 100, status: 'Taken'),
-      const DayProgress(day: 'Wednesday', value: 67, status: 'Needs attention'),
-      const DayProgress(day: 'Thursday', value: 100, status: 'Taken'),
-      const DayProgress(day: 'Friday', value: 100, status: 'Taken'),
-      DayProgress(
-        day: 'Saturday',
-        value: state.hasMissedMedication ? 50 : 100,
-        status: state.hasMissedMedication ? 'Missed dose' : 'Taken',
-      ),
-      const DayProgress(day: 'Sunday', value: 0, status: 'Today'),
-    ];
+    final today = DateTime.now();
+    final days = List<DateTime>.generate(
+      7,
+      (index) => DateTime(today.year, today.month, today.day - (6 - index)),
+    );
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       children: [
@@ -845,28 +971,33 @@ class ProgressTab extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 20),
-        ...days.map(
-          (day) => Card(
+        if (state.hasThreeDayMissedStreak) const _ThreeDayReminderBanner(),
+        ...days.map((day) {
+          final value = state.dayMedicationPercentage(day);
+          final status = state.dayMedicationStatus(day);
+          return Card(
             margin: const EdgeInsets.only(bottom: 10),
             child: ListTile(
               leading: CircleAvatar(
-                backgroundColor: day.value >= 80
+                backgroundColor: value >= 80
                     ? Colors.green.withValues(alpha: .12)
                     : Colors.orange.withValues(alpha: .15),
                 child: Icon(
-                  day.value >= 80 ? Icons.check : Icons.warning_amber,
-                  color: day.value >= 80 ? Colors.green : Colors.orange,
+                  value >= 80 ? Icons.check : Icons.warning_amber,
+                  color: value >= 80 ? Colors.green : Colors.orange,
                 ),
               ),
-              title: Text(day.day),
-              subtitle: Text(day.status),
+              title: Text(
+                '${dayName(day)}${state.isSameDay(day, today) ? ' (Today)' : ''}',
+              ),
+              subtitle: Text(status),
               trailing: Text(
-                day.value == 0 ? 'Today' : '${day.value}%',
+                '$value%',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
-          ),
-        ),
+          );
+        }),
         if (state.hasMissedMedication) const _EscalationBanner(),
       ],
     );
@@ -1477,6 +1608,26 @@ class _EscalationBanner extends StatelessWidget {
         title: Text('Follow-up required'),
         subtitle: Text(
           'A missed medicine was recorded. Your care team may follow up if misses continue.',
+        ),
+      ),
+    );
+  }
+}
+
+class _ThreeDayReminderBanner extends StatelessWidget {
+  const _ThreeDayReminderBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Colors.red.shade50,
+      margin: const EdgeInsets.only(bottom: 12),
+      child: const ListTile(
+        leading: Icon(Icons.notifications_active, color: Colors.red),
+        title: Text('Three-day medication reminder'),
+        subtitle: Text(
+          'You have not recorded any medicine for 3 days. '
+          'Please take the next dose as prescribed and contact your doctor.',
         ),
       ),
     );
